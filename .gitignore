@@ -1,0 +1,13 @@
+node_modules/
+.pnpm-store/
+.vercel/
+dist/
+dist-server/
+.env
+*.local
+*.log
+certs/*.pem
+certs/*.key
+certs/*.crt
+
+.vercel
