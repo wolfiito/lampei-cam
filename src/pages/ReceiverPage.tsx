@@ -25,7 +25,6 @@ export function ReceiverPage() {
 
   const startOffer = useCallback(async () => {
     if (negotiationRef.current || signalingRef.current === undefined) return;
-    negotiationRef.current = true;
     closePeer();
     negotiationRef.current = true;
     setError('');
@@ -50,8 +49,9 @@ export function ReceiverPage() {
         }
       });
       peer.addEventListener('connectionstatechange', () => {
+        if (peerRef.current !== peer) return;
         setPeerState(peer.connectionState);
-        if (peer.connectionState === 'failed') {
+        if (peer.connectionState === 'connected' || peer.connectionState === 'failed') {
           negotiationRef.current = false;
         }
       });
@@ -73,14 +73,12 @@ export function ReceiverPage() {
       if (message.type === 'welcome') {
         const present = message.peers.includes('sender');
         setSenderPresent(present);
-        if (present) await startOffer();
       }
       if (message.type === 'peer-joined' && message.role === 'sender') {
         setSenderPresent(true);
       }
       if (message.type === 'ready') {
         setSenderPresent(true);
-        negotiationRef.current = false;
         await startOffer();
       }
       if (message.type === 'peer-left' && message.role === 'sender') {
@@ -90,10 +88,15 @@ export function ReceiverPage() {
       if (message.type === 'signal') {
         const payload = message.payload;
         try {
-          if ('description' in payload && payload.description.type === 'answer' && peerRef.current) {
-            await peerRef.current.setRemoteDescription(payload.description);
+          const peer = peerRef.current;
+          if (
+            'description' in payload &&
+            payload.description.type === 'answer' &&
+            peer?.signalingState === 'have-local-offer'
+          ) {
+            await peer.setRemoteDescription(payload.description);
             for (const candidate of pendingCandidates.current.splice(0)) {
-              await peerRef.current.addIceCandidate(candidate);
+              await peer.addIceCandidate(candidate);
             }
           } else if ('candidate' in payload) {
             if (peerRef.current?.remoteDescription) {

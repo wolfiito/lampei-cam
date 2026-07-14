@@ -81,6 +81,13 @@ export function SenderPage() {
           setError(`No se pudo negociar la señal: ${String(reason)}`);
         }
       }
+      if (
+        message.type === 'peer-joined' &&
+        message.role === 'receiver' &&
+        streamRef.current?.getVideoTracks().some((track) => track.readyState === 'live')
+      ) {
+        signaling.send({ type: 'ready' });
+      }
       if (message.type === 'peer-left') closePeer();
     });
     signaling.connect();
@@ -131,7 +138,6 @@ export function SenderPage() {
         setResolution(settings?.width && settings.height ? `${settings.width} × ${settings.height}` : 'Activa');
         stream.getAudioTracks().forEach((track) => (track.enabled = !muted));
         setCameraState('ready');
-        signalingRef.current?.send({ type: 'ready' });
 
         if ('wakeLock' in navigator) {
           const lock = await navigator.wakeLock.request('screen');
