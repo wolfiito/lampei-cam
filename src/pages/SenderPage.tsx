@@ -12,6 +12,77 @@ import {
 type CameraState = 'idle' | 'starting' | 'ready' | 'error';
 type FacingMode = 'environment' | 'user';
 
+// A broadcast shot is mostly static, so we spend the budget on a stable 1080p
+// instead of letting the call-tuned defaults trade resolution for framerate.
+const VIDEO_MAX_BITRATE = 4_000_000;
+const VIDEO_MAX_FRAMERATE = 30;
+
+// iPhones encode H.264 in dedicated silicon. Falling back to VP8/VP9 means a
+// software encoder: the phone heats up, iOS throttles and frames start dropping
+// well before a service is over.
+const PREFERRED_VIDEO_CODECS = ['video/h264'];
+
+function preferHardwareVideoCodec(peer: RTCPeerConnection) {
+  if (typeof RTCRtpSender.getCapabilities !== 'function') return;
+  const capabilities = RTCRtpSender.getCapabilities('video');
+  if (!capabilities) return;
+
+  const isPreferred = (mimeType: string) => PREFERRED_VIDEO_CODECS.includes(mimeType.toLowerCase());
+  const preferred = capabilities.codecs.filter((codec) => isPreferred(codec.mimeType));
+  const rest = capabilities.codecs.filter((codec) => !isPreferred(codec.mimeType));
+  if (preferred.length === 0) return;
+
+  for (const transceiver of peer.getTransceivers()) {
+    const kind = transceiver.sender.track?.kind ?? transceiver.receiver.track?.kind;
+    if (kind !== 'video' || typeof transceiver.setCodecPreferences !== 'function') continue;
+    try {
+      transceiver.setCodecPreferences([...preferred, ...rest]);
+    } catch {
+      // Safari may reject a reordering it cannot honour; default negotiation still works.
+    }
+  }
+}
+
+async function applyVideoEncoding(peer: RTCPeerConnection) {
+  const sender = peer.getSenders().find((candidate) => candidate.track?.kind === 'video');
+  if (!sender) return;
+
+  const parameters = sender.getParameters() as RTCRtpSendParameters & {
+    degradationPreference?: 'balanced' | 'maintain-framerate' | 'maintain-resolution';
+  };
+  if (!parameters.encodings || parameters.encodings.length === 0) {
+    parameters.encodings = [{}];
+  }
+  // Drop framerate before resolution: OBS composes at 1080p and upscaling a
+  // downgraded stream is what makes the picture look soft.
+  parameters.degradationPreference = 'maintain-resolution';
+  parameters.encodings[0].maxBitrate = VIDEO_MAX_BITRATE;
+  parameters.encodings[0].maxFramerate = VIDEO_MAX_FRAMERATE;
+
+  try {
+    await sender.setParameters(parameters);
+  } catch {
+    // Older WebKit rejects some fields; the stream keeps running with defaults.
+  }
+}
+
+async function readNegotiatedCodec(peer: RTCPeerConnection) {
+  try {
+    const stats = (await peer.getStats()) as unknown as Map<string, Record<string, unknown>>;
+    let mimeType: string | undefined;
+    stats.forEach((report) => {
+      if (report.type !== 'outbound-rtp' || report.kind !== 'video') return;
+      const codecId = report.codecId;
+      if (typeof codecId !== 'string') return;
+      const codec = stats.get(codecId);
+      if (typeof codec?.mimeType === 'string') mimeType = codec.mimeType;
+    });
+    return mimeType?.replace(/^video\//i, '').toUpperCase();
+  } catch {
+    return undefined;
+  }
+}
+
 export function SenderPage() {
   const room = getRoomFromUrl();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -30,12 +101,14 @@ export function SenderPage() {
   const [muted, setMuted] = useState(false);
   const [error, setError] = useState('');
   const [resolution, setResolution] = useState('—');
+  const [videoCodec, setVideoCodec] = useState('—');
 
   const closePeer = useCallback(() => {
     peerRef.current?.close();
     peerRef.current = undefined;
     pendingCandidates.current = [];
     setPeerState('new');
+    setVideoCodec('—');
   }, []);
 
   const createPeer = useCallback(() => {
@@ -54,6 +127,11 @@ export function SenderPage() {
     peer.addEventListener('connectionstatechange', () => {
       if (peerRef.current !== peer) return;
       setPeerState(peer.connectionState);
+      if (peer.connectionState === 'connected') {
+        void readNegotiatedCodec(peer).then((codec) => {
+          if (peerRef.current === peer && codec) setVideoCodec(codec);
+        });
+      }
       if (peer.connectionState === 'failed') {
         // The receiver owns renegotiation: ask it for a fresh offer.
         signalingRef.current?.send({ type: 'ready' });
@@ -77,8 +155,10 @@ export function SenderPage() {
             for (const candidate of pendingCandidates.current.splice(0)) {
               await peer.addIceCandidate(candidate);
             }
+            preferHardwareVideoCodec(peer);
             const answer = await peer.createAnswer();
             await peer.setLocalDescription(answer);
+            await applyVideoEncoding(peer);
             signaling.send({ type: 'signal', payload: { description: answer } });
           } else if ('candidate' in payload) {
             if (peerRef.current?.remoteDescription) {
@@ -191,6 +271,12 @@ export function SenderPage() {
           detachTrackListenersRef.current = undefined;
         };
 
+        // Tells the encoder to protect spatial detail (faces, lyrics on screen)
+        // rather than smoothness, matching the maintain-resolution preference.
+        stream.getVideoTracks().forEach((track) => {
+          if ('contentHint' in track) track.contentHint = 'detail';
+        });
+
         const settings = stream.getVideoTracks()[0]?.getSettings();
         setResolution(settings?.width && settings.height ? `${settings.width} × ${settings.height}` : 'Activa');
         stream.getAudioTracks().forEach((track) => (track.enabled = !muted));
@@ -260,6 +346,7 @@ export function SenderPage() {
         <footer className="camera-controls">
           <div className="camera-metadata">
             <span>{resolution}</span>
+            <span>{videoCodec}</span>
             <span>{room}</span>
           </div>
           <div className="control-row">
