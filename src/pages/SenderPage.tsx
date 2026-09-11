@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Brand } from '../components/Brand';
+import { DiagnosticsPanel } from '../components/DiagnosticsPanel';
 import { StatusPill } from '../components/StatusPill';
 import { getRoomFromUrl, isValidRoom } from '../lib/room';
+import { useSenderStats } from '../lib/stats';
 import {
   rtcConfiguration,
   SignalingClient,
@@ -102,6 +104,7 @@ export function SenderPage() {
   const [error, setError] = useState('');
   const [resolution, setResolution] = useState('—');
   const [videoCodec, setVideoCodec] = useState('—');
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
 
   const closePeer = useCallback(() => {
     peerRef.current?.close();
@@ -311,11 +314,12 @@ export function SenderPage() {
     streamRef.current?.getAudioTracks().forEach((track) => (track.enabled = !nextMuted));
   };
 
+  const isLive = peerState === 'connected';
+  const stats = useSenderStats(peerRef, showDiagnostics);
+
   if (!isValidRoom(room)) {
     return <InvalidRoom />;
   }
-
-  const isLive = peerState === 'connected';
 
   return (
     <main className="camera-page">
@@ -344,11 +348,23 @@ export function SenderPage() {
 
       {cameraState === 'ready' && (
         <footer className="camera-controls">
-          <div className="camera-metadata">
+          {showDiagnostics && <DiagnosticsPanel stats={stats} />}
+          <button
+            type="button"
+            className="camera-metadata"
+            onClick={() => setShowDiagnostics((visible) => !visible)}
+            aria-expanded={showDiagnostics}
+          >
             <span>{resolution}</span>
             <span>{videoCodec}</span>
             <span>{room}</span>
-          </div>
+            <span className="camera-metadata__caret" aria-hidden="true">
+              {showDiagnostics ? '▾' : '▴'}
+            </span>
+            <span className="visually-hidden">
+              {showDiagnostics ? 'Ocultar diagnóstico' : 'Ver diagnóstico'}
+            </span>
+          </button>
           <div className="control-row">
             <button type="button" onClick={toggleMute} className={muted ? 'is-active' : ''}>
               <span aria-hidden="true">{muted ? '×' : ')))'}</span>

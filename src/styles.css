@@ -152,6 +152,22 @@ button { color: inherit; }
 .control-row span { font-family: 'DM Mono', monospace; font-size: .9rem; }
 .control-row .is-active { color: #ff9898; border-color: rgba(255,93,93,.3); }
 
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+.camera-metadata { width: 100%; padding: 6px 0; border: 0; background: transparent; text-align: left; cursor: pointer; align-items: center; gap: 12px; }
+.camera-metadata__caret { color: var(--muted); margin-left: auto; }
+
+.diagnostics { margin: 0 0 14px; padding: 12px 15px; border: 1px solid var(--line); border-radius: 3px; background: rgba(8, 11, 15, .82); backdrop-filter: blur(14px); font-family: 'DM Mono', monospace; font-size: .64rem; }
+.diagnostics__empty { margin: 0; color: var(--muted); line-height: 1.5; }
+.diag-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 6px 0; border-bottom: 1px solid rgba(255, 255, 255, .05); }
+.diag-row:last-child { border-bottom: 0; }
+.diag-row dt { color: var(--muted); letter-spacing: .1em; }
+.diag-row dd { margin: 0; text-align: right; }
+.diag-hint { display: block; margin-top: 3px; color: var(--muted); font-size: .57rem; letter-spacing: .02em; }
+.diag-value--ok { color: var(--green); }
+.diag-value--warn { color: #ffc857; }
+.diag-value--bad { color: var(--red); }
+
 .receiver-page video { opacity: 0; transition: opacity .2s ease; }
 .receiver-page video.is-live { opacity: 1; }
 .receiver-placeholder, .centered-message { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 30px; background: radial-gradient(circle at 50% 45%, #17202a, #080b0f 60%); }
