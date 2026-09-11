@@ -20,6 +20,9 @@ export function SenderPage() {
   const pendingCandidates = useRef<RTCIceCandidateInit[]>([]);
   const signalingRef = useRef<SignalingClient | undefined>(undefined);
   const wakeLockRef = useRef<WakeLockSentinel | undefined>(undefined);
+  const startCameraRef = useRef<((facing?: FacingMode) => Promise<void>) | undefined>(undefined);
+  const detachTrackListenersRef = useRef<(() => void) | undefined>(undefined);
+  const restartingRef = useRef(false);
   const [cameraState, setCameraState] = useState<CameraState>('idle');
   const [signalState, setSignalState] = useState<SignalingState>('connecting');
   const [peerState, setPeerState] = useState<RTCPeerConnectionState>('new');
@@ -48,7 +51,14 @@ export function SenderPage() {
         });
       }
     });
-    peer.addEventListener('connectionstatechange', () => setPeerState(peer.connectionState));
+    peer.addEventListener('connectionstatechange', () => {
+      if (peerRef.current !== peer) return;
+      setPeerState(peer.connectionState);
+      if (peer.connectionState === 'failed') {
+        // The receiver owns renegotiation: ask it for a fresh offer.
+        signalingRef.current?.send({ type: 'ready' });
+      }
+    });
     return peer;
   }, [closePeer]);
 
@@ -107,15 +117,42 @@ export function SenderPage() {
 
   useEffect(() => {
     return () => {
+      detachTrackListenersRef.current?.();
       streamRef.current?.getTracks().forEach((track) => track.stop());
       wakeLockRef.current?.release().catch(() => undefined);
     };
   }, []);
 
+  const acquireWakeLock = useCallback(async () => {
+    if (!('wakeLock' in navigator) || wakeLockRef.current) return;
+    try {
+      const lock = await navigator.wakeLock.request('screen');
+      wakeLockRef.current = lock;
+      lock.addEventListener('release', () => {
+        if (wakeLockRef.current === lock) wakeLockRef.current = undefined;
+      });
+    } catch {
+      // The system can refuse the lock (low battery); retried on the next foreground.
+    }
+  }, []);
+
+  // The OS revokes the wake lock whenever the tab loses visibility, so it has to be
+  // taken again on every return to the foreground or the phone sleeps mid-stream.
+  useEffect(() => {
+    if (cameraState !== 'ready') return;
+    void acquireWakeLock();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void acquireWakeLock();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, [acquireWakeLock, cameraState]);
+
   const startCamera = useCallback(
     async (nextFacingMode = facingMode) => {
       setCameraState('starting');
       setError('');
+      detachTrackListenersRef.current?.();
       streamRef.current?.getTracks().forEach((track) => track.stop());
 
       try {
@@ -134,15 +171,30 @@ export function SenderPage() {
         });
         streamRef.current = stream;
         if (videoRef.current) videoRef.current.srcObject = stream;
+
+        // iOS ends the track when a call arrives or another app grabs the camera.
+        // track.stop() does not fire 'ended', so this only reacts to real interruptions.
+        const handleTrackEnded = () => {
+          if (restartingRef.current) return;
+          restartingRef.current = true;
+          closePeer();
+          setError('Se interrumpió la cámara. Reconectando…');
+          window.setTimeout(() => {
+            restartingRef.current = false;
+            void startCameraRef.current?.(nextFacingMode);
+          }, 800);
+        };
+        const tracks = stream.getTracks();
+        tracks.forEach((track) => track.addEventListener('ended', handleTrackEnded));
+        detachTrackListenersRef.current = () => {
+          tracks.forEach((track) => track.removeEventListener('ended', handleTrackEnded));
+          detachTrackListenersRef.current = undefined;
+        };
+
         const settings = stream.getVideoTracks()[0]?.getSettings();
         setResolution(settings?.width && settings.height ? `${settings.width} × ${settings.height}` : 'Activa');
         stream.getAudioTracks().forEach((track) => (track.enabled = !muted));
         setCameraState('ready');
-
-        if ('wakeLock' in navigator) {
-          const lock = await navigator.wakeLock.request('screen');
-          wakeLockRef.current = lock;
-        }
       } catch (reason) {
         setCameraState('error');
         const message = reason instanceof DOMException ? reason.name : String(reason);
@@ -153,8 +205,12 @@ export function SenderPage() {
         );
       }
     },
-    [facingMode, muted],
+    [closePeer, facingMode, muted],
   );
+
+  useEffect(() => {
+    startCameraRef.current = startCamera;
+  }, [startCamera]);
 
   const flipCamera = async () => {
     const next = facingMode === 'environment' ? 'user' : 'environment';
